@@ -1,0 +1,2 @@
+# Ignore local Python version files (pyenv/pyenv-virtualenv)
+backend/.python-version
