@@ -2,6 +2,7 @@
 PackAI — AI Packaging Automation Platform
 FastAPI application entry point
 """
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -20,16 +21,12 @@ from app.api import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: create DB tables + load all ML models into memory."""
     print("[startup] Creating database tables...")
     create_tables()
-
     print("[startup] Loading ML models...")
     load_models()
     print(f"[startup] Models loaded: {get_loaded_models()}")
-
     yield
-
     print("[shutdown] PackAI shutting down.")
 
 
@@ -43,11 +40,19 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+    "https://businesss.onrender.com",
+    "https://businesss-azure.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["http://localhost:3000","https://businesss-azure.vercel.app/"],
-    allow_credentials = True,
-    allow_methods     = ["*"],
+    allow_origins     = ALLOWED_ORIGINS,
+    allow_credentials = False,
+    allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers     = ["*"],
 )
 
@@ -60,6 +65,16 @@ app.include_router(analytics_routes.router)
 app.include_router(products_routes.router)
 
 
+@app.get("/", tags=["Root"])
+def root():
+    return {
+        "message": "PackAI API is running",
+        "docs":    "/docs",
+        "health":  "/health",
+        "version": "1.0.0",
+    }
+
+
 @app.get("/health", tags=["Health"])
 def health():
     return {
@@ -67,3 +82,16 @@ def health():
         "version": "1.0.0",
         "models":  get_loaded_models(),
     }
+
+
+# ── Entry point — Render reads PORT from environment ─────────────────────────
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    print(f"[startup] Starting server on port {port}")
+    uvicorn.run(
+        "main:app",
+        host   = "0.0.0.0",
+        port   = port,
+        reload = False,
+    )
