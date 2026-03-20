@@ -747,15 +747,26 @@ function switchTab(tab) {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-async function apiCall(path, method='GET', body=null) {
+async function apiCall(path, method='GET', body=null, retries=2) {
   const opts = { method, headers: { 'Content-Type':'application/json' } };
   if (token) opts.headers['Authorization'] = 'Bearer ' + token;
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(API + path, opts).catch(() => null);
-  if (!res) throw new Error('Cannot reach backend. Make sure it is running at ' + API);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || 'Request failed');
-  return data;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(API + path, opts);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Request failed');
+      return data;
+    } catch(e) {
+      if (attempt < retries) {
+        showToast(`Connecting to server... (attempt ${attempt + 1})`, 'info');
+        await new Promise(r => setTimeout(r, 3000));
+        continue;
+      }
+      throw new Error('Cannot reach backend at ' + API + '. Render free tier may be waking up — wait 60 seconds and try again.');
+    }
+  }
 }
 
 async function handleLogin() {
