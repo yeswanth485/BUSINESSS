@@ -44,7 +44,7 @@ ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:5500",
     "http://127.0.0.1:5500",
-    "https://businesss.onrender.com",
+    "https://businesss-1.onrender.com",
     "https://businesss-azure.vercel.app",
 ]
 
