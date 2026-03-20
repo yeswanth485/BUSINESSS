@@ -42,10 +42,10 @@ app = FastAPI(
 # ── CORS — fully open, allows every origin including Vercel ──────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],
-    allow_credentials = False,
-    allow_methods     = ["*"],
-    allow_headers     = ["*"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ── Routes ────────────────────────────────────────────────────────────────────
