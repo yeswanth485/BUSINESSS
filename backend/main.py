@@ -39,18 +39,11 @@ app = FastAPI(
     redoc_url   = "/redoc",
 )
 
-# ── CORS ──────────────────────────────────────────────────────────────────────
-ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5500",
-    "http://127.0.0.1:5500",
-    "https://businesss-1.onrender.com",
-    "https://businesss-azure.vercel.app",
-]
-
+# ── CORS — allow ALL origins so any Vercel URL works ─────────────────────────
+# This is the safest fix — allows your main URL, preview URLs, and localhost
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ALLOWED_ORIGINS,
+    allow_origins     = ["*"],
     allow_credentials = False,
     allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers     = ["*"],
