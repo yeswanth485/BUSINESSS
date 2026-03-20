@@ -39,13 +39,12 @@ app = FastAPI(
     redoc_url   = "/redoc",
 )
 
-# ── CORS — allow ALL origins so any Vercel URL works ─────────────────────────
-# This is the safest fix — allows your main URL, preview URLs, and localhost
+# ── CORS — fully open, allows every origin including Vercel ──────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins     = ["*"],
     allow_credentials = False,
-    allow_methods     = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods     = ["*"],
     allow_headers     = ["*"],
 )
 
@@ -77,14 +76,8 @@ def health():
     }
 
 
-# ── Entry point — Render reads PORT from environment ─────────────────────────
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     print(f"[startup] Starting server on port {port}")
-    uvicorn.run(
-        "main:app",
-        host   = "0.0.0.0",
-        port   = port,
-        reload = False,
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
