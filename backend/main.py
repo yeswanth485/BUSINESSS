@@ -13,9 +13,15 @@ async def lifespan(app: FastAPI):
     load_models()
     yield
 
-app = FastAPI(title="PackAI", version="1.0.0")
+app = FastAPI(title="PackAI", version="1.0.0", lifespan=lifespan)
 
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(auth_routes.router)
 app.include_router(orders_routes.router)
@@ -26,11 +32,11 @@ app.include_router(products_routes.router)
 
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {"status": "running", "frontend": "https://ai-packaging-automation.netlify.app"}
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": "1.0.0", "models": get_loaded_models()}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
