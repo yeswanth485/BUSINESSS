@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
@@ -9,18 +10,26 @@ from .config import get_settings
 from .database import get_db
 from ..models.models import User
 
-settings     = get_settings()
-pwd_context  = CryptContext(schemes=["bcrypt"], deprecated="auto")
+settings      = get_settings()
+pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
+def _prepare_password(plain: str) -> str:
+    """
+    Convert any password to a fixed 64-char hex string before bcrypt.
+    This removes the 72-byte bcrypt limit entirely.
+    Accepts uppercase, lowercase, special chars, any length.
+    """
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest()
+
+
 def hash_password(plain: str) -> str:
-    # bcrypt limit is 72 bytes — truncate safely
-    return pwd_context.hash(plain[:72])
+    return pwd_context.hash(_prepare_password(plain))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain[:72], hashed)
+    return pwd_context.verify(_prepare_password(plain), hashed)
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -34,10 +43,16 @@ def decode_access_token(token: str) -> dict:
     try:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
 
 
-def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+def get_current_user(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> User:
     payload = decode_access_token(token)
     user_id = payload.get("sub")
     if not user_id:
