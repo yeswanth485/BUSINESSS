@@ -1,35 +1,70 @@
 """
-Database connection — with connection pooling tuned for Render free tier
+Database — lazy connection, only connects when first request arrives.
+Does NOT connect at import time — this was causing port timeout.
 """
+import os
+import time
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from .config import get_settings
 
-settings = get_settings()
+Base = declarative_base()
 
-# Fix postgres:// -> postgresql:// (Render gives postgres:// which SQLAlchemy 2.x rejects)
-db_url = settings.DATABASE_URL
-if db_url.startswith("postgres://"):
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
+_engine       = None
+_SessionLocal = None
+_ready        = False
 
-engine = create_engine(
-    db_url,
-    pool_pre_ping   = True,
-    pool_size       = 3,      # small pool for free tier
-    max_overflow    = 5,
-    pool_recycle    = 300,    # recycle connections every 5 min
-    pool_timeout    = 30,
-    connect_args    = {"connect_timeout": 10},
-    echo            = False,
-)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base         = declarative_base()
+def _get_url():
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
+def _ensure_ready():
+    """Connect and create tables on first use. Retries 3 times."""
+    global _engine, _SessionLocal, _ready
+    if _ready:
+        return True
+
+    url = _get_url()
+    if not url:
+        raise RuntimeError("DATABASE_URL not set in environment variables")
+
+    for attempt in range(3):
+        try:
+            engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_size=3,
+                max_overflow=5,
+                pool_recycle=300,
+                connect_args={"connect_timeout": 10},
+            )
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+
+            _engine       = engine
+            _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+            Base.metadata.create_all(bind=engine)
+            _ready = True
+            print(f"[DB] Connected on attempt {attempt+1}")
+            return True
+
+        except Exception as e:
+            print(f"[DB] Attempt {attempt+1}/3 failed: {e}")
+            if attempt < 2:
+                time.sleep(2)
+
+    raise RuntimeError("Database connection failed after 3 attempts. Check DATABASE_URL in Render environment.")
 
 
 def get_db():
-    db = SessionLocal()
+    """FastAPI dependency — connects on first call, reuses after."""
+    _ensure_ready()
+    db = _SessionLocal()
     try:
         yield db
     finally:
@@ -37,13 +72,5 @@ def get_db():
 
 
 def create_tables():
-    try:
-        # Test connection first
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        print("[DB] Connection successful")
-        Base.metadata.create_all(bind=engine)
-        print("[DB] Tables created/verified")
-    except Exception as e:
-        print(f"[DB] Connection failed: {e}")
-        raise
+    """Called from startup — ensures tables exist."""
+    _ensure_ready()
