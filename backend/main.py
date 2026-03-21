@@ -28,7 +28,7 @@ async def preflight(path: str):
     return JSONResponse({}, headers={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"*","Access-Control-Allow-Methods":"*"})
 
 @app.get("/")
-def root(): return {"status":"running","version":"1.0.0"}
+def root(): return {"status":"running","version":"1.0.0","frontend":"https://ai-packaging-automation-service.netlify.app"}
 
 @app.get("/health")
 def health(): return {"status":"ok","version":"1.0.0","db":"ready" if _db_ready else "starting"}
