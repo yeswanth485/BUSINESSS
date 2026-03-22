@@ -34,16 +34,21 @@ def root(): return {"status":"running","version":"1.0.0","frontend":"https://ai-
 def health():
     ml_ok = False
     try:
-        from app.services.ml_service import is_ml_available
-        ml_ok = is_ml_available()
-    except Exception:
-        pass
+        # Import the actual loaded module — same instance as background thread
+        import sys
+        ml_mod = sys.modules.get('app.services.ml_service')
+        if ml_mod is None:
+            from app.services import ml_service as ml_mod
+        ml_ok = ml_mod.is_ml_available()
+    except Exception as e:
+        print(f"[health] ML check error: {e}")
     return {
         "status":       "ok",
         "version":      "1.0.0",
         "db":           "ready" if _db_ready else "starting",
         "ml_available": ml_ok,
         "engine":       "ml_hybrid" if ml_ok else "rule_based",
+        "ml_models":    len(sys.modules.get('app.services.ml_service', type('',(),{'get_loaded_models':lambda:[]})()).get_loaded_models()) if ml_ok else 0,
     }
 
 @app.get("/fix-db")
@@ -118,12 +123,6 @@ def _init_db():
             print("[DB] Ready")
             # Run column migrations for new cost tracking fields
             _run_migrations(eng)
-            # Load ML models once at startup
-            try:
-                from app.services import ml_service as _ml
-                _ml.load_models()
-            except Exception as me:
-                print(f"[ML] Load skipped: {me}")
             return
         except Exception as e:
             print(f"[DB] Attempt {i+1}: {e}")
@@ -229,6 +228,24 @@ try:
     print("[startup] Other routes loaded")
 except Exception as e:
     print(f"[startup] Route error: {e}")
+
+# Load ML in a separate daemon thread so it doesn't block startup
+# This runs AFTER all routes are registered and server is accepting requests
+def _load_ml_background():
+    import time
+    # Wait for DB to be ready first
+    deadline = time.time() + 60
+    while not _db_ready and time.time() < deadline:
+        time.sleep(1)
+    try:
+        from app.services import ml_service as _ml
+        _ml.load_models()
+        print(f"[ML] Ready — models: {_ml.get_loaded_models()}")
+    except Exception as e:
+        print(f"[ML] Load failed: {e}")
+
+threading.Thread(target=_load_ml_background, daemon=True).start()
+print("[startup] ML loading in background...")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
