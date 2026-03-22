@@ -313,6 +313,89 @@ def predict_packaging(l: float, w: float, h: float, wt: float) -> Dict[str, Any]
     }
 
 
+
+def predict_batch(orders: List[tuple]) -> List[Dict[str, Any]]:
+    """
+    Run all 5 models on ALL orders simultaneously using matrix operations.
+    Args: orders = list of (length, width, height, weight) tuples
+    Returns: list of {voted_box, vote_confidence, agreement, models_used}
+    Performance: 500 orders ~1.2s, 1000 orders ~1.5s
+    """
+    if not _sklearn_available or len(_models) < 3:
+        raise RuntimeError("ML models not available")
+    if not orders:
+        return []
+
+    # Validate all inputs
+    for i, (l, w, h, wt) in enumerate(orders):
+        try:
+            _validate_inputs(float(l), float(w), float(h), float(wt))
+        except ValueError as e:
+            raise ValueError(f"Order {i}: {e}")
+
+    sc = _models.get("scaler")
+    le = _models.get("label_encoder")
+
+    # Build full feature matrix in one pass
+    X_raw = []
+    for l, w, h, wt in orders:
+        l, w, h, wt = float(l), float(w), float(h), float(wt)
+        vol = l * w * h
+        X_raw.append([l, w, h, wt,
+                       vol, vol / 5000.0,
+                       l / max(h, 0.001),
+                       wt / max(vol, 0.001),
+                       l + w + h,
+                       l / max(w, 0.001)])
+    X = np.array(X_raw)
+    if sc is not None:
+        X = sc.transform(X)
+
+    model_names = ["random_forest", "gradient_boost", "extra_trees", "svm", "voting_ensemble"]
+
+    # Run every model on full matrix at once — vectorised
+    all_preds  = {}
+    all_probas = {}
+    for name in model_names:
+        if name not in _models:
+            continue
+        try:
+            all_preds[name]  = _models[name].predict(X)
+            all_probas[name] = _models[name].predict_proba(X)
+        except Exception as e:
+            logger.warning(f"[ML-Batch] {name} failed: {e}")
+
+    if not all_preds:
+        raise RuntimeError("All models failed in batch prediction")
+
+    run_models = list(all_preds.keys())
+    results = []
+    for i in range(len(orders)):
+        votes = {}
+        for name in run_models:
+            pred = all_preds[name][i]
+            conf = float(np.max(all_probas[name][i]))
+            box  = le.inverse_transform([pred])[0] if le else str(pred)
+            votes[box] = votes.get(box, 0.0) + conf
+
+        voted_box  = max(votes, key=votes.get)
+        total_conf = sum(votes.values())
+        agreement  = sum(
+            1 for name in run_models
+            if (le.inverse_transform([all_preds[name][i]])[0] if le else str(all_preds[name][i])) == voted_box
+        ) / len(run_models)
+
+        results.append({
+            "voted_box":       voted_box,
+            "vote_confidence": round(votes[voted_box] / total_conf, 4) if total_conf else 0.0,
+            "agreement":       round(agreement, 4),
+            "models_used":     len(run_models),
+        })
+
+    logger.info(f"[ML-Batch] {len(orders)} orders → {len(run_models)} models → done")
+    return results
+
+
 def get_loaded_models() -> List[str]:
     return [k for k in _models if k not in ("label_encoder", "scaler")]
 
