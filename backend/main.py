@@ -32,23 +32,32 @@ def root(): return {"status":"running","version":"1.0.0","frontend":"https://ai-
 
 @app.get("/health")
 def health():
-    ml_ok = False
+    import sys
+    ml_ok     = False
+    ml_count  = 0
+    ml_status = "not_started"
     try:
-        # Import the actual loaded module — same instance as background thread
-        import sys
-        ml_mod = sys.modules.get('app.services.ml_service')
-        if ml_mod is None:
-            from app.services import ml_service as ml_mod
-        ml_ok = ml_mod.is_ml_available()
+        from app.services.ml_service import is_ml_available, get_loaded_models
+        ml_ok    = is_ml_available()
+        ml_count = len(get_loaded_models())
+        if _ml_loading:
+            ml_status = "training"
+        elif _ml_error:
+            ml_status = f"error: {_ml_error}"
+        elif ml_ok:
+            ml_status = "ready"
+        else:
+            ml_status = "unavailable"
     except Exception as e:
-        print(f"[health] ML check error: {e}")
+        ml_status = f"check_error: {e}"
     return {
         "status":       "ok",
         "version":      "1.0.0",
         "db":           "ready" if _db_ready else "starting",
         "ml_available": ml_ok,
+        "ml_status":    ml_status,
+        "ml_models":    ml_count,
         "engine":       "ml_hybrid" if ml_ok else "rule_based",
-        "ml_models":    len(sys.modules.get('app.services.ml_service', type('',(),{'get_loaded_models':lambda:[]})()).get_loaded_models()) if ml_ok else 0,
     }
 
 @app.get("/fix-db")
@@ -229,20 +238,32 @@ try:
 except Exception as e:
     print(f"[startup] Route error: {e}")
 
-# Load ML in a separate daemon thread so it doesn't block startup
-# This runs AFTER all routes are registered and server is accepting requests
+# ML state flags — readable from health endpoint
+_ml_loading = False
+_ml_error   = None
+
 def _load_ml_background():
+    global _ml_loading, _ml_error
     import time
-    # Wait for DB to be ready first
-    deadline = time.time() + 60
-    while not _db_ready and time.time() < deadline:
+    _ml_loading = True
+    # Wait for DB ready (max 30s)
+    for _ in range(30):
+        if _db_ready:
+            break
         time.sleep(1)
+    print("[ML] Starting model load / auto-train...")
     try:
-        from app.services import ml_service as _ml
-        _ml.load_models()
-        print(f"[ML] Ready — models: {_ml.get_loaded_models()}")
+        # Direct import — same process, same module cache
+        from app.services.ml_service import load_models, get_loaded_models
+        load_models()
+        loaded = get_loaded_models()
+        print(f"[ML] Ready — {len(loaded)} models: {loaded}")
     except Exception as e:
-        print(f"[ML] Load failed: {e}")
+        _ml_error = str(e)
+        print(f"[ML] FAILED: {e}")
+        import traceback; traceback.print_exc()
+    finally:
+        _ml_loading = False
 
 threading.Thread(target=_load_ml_background, daemon=True).start()
 print("[startup] ML loading in background...")
