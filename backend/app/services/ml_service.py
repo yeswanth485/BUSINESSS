@@ -1,56 +1,67 @@
 """
-ML Service — loads pre-trained models at startup if available.
-If scikit-learn is not installed (e.g. on Render free tier),
-the service gracefully disables ML and the decision engine
-falls back to the rule-based system automatically.
+ML Service — loads pre-trained models at startup.
+Validates inputs strictly before prediction.
+Logs all predictions for monitoring.
+Only used as fallback when rule-based engine fails.
 """
 import os
-import joblib
+import logging
 import numpy as np
 from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger(__name__)
 
 _models: Dict[str, Any] = {}
 _sklearn_available = False
 
-# Try to import sklearn — optional on server
 try:
-    import sklearn  # noqa
+    import sklearn
     _sklearn_available = True
-    print("[ML] scikit-learn available")
+    logger.info("[ML] scikit-learn available")
 except ImportError:
-    print("[ML] scikit-learn not installed — ML fallback disabled, rule-based engine will handle all orders")
+    logger.warning("[ML] scikit-learn not installed — rule-based engine handles all orders")
 
 
 def load_models():
-    """
-    Called once at startup.
-    Only loads models if sklearn is available and .pkl files exist.
-    """
     if not _sklearn_available:
-        print("[ML] Skipping model load — sklearn not available")
+        logger.info("[ML] Skipping model load — sklearn not available")
         return
 
+    import joblib
     model_files = {
-        "random_forest":  "ml_engine/models/rf_model.pkl",
-        "gradient_boost": "ml_engine/models/gb_model.pkl",
-        "extra_trees":    "ml_engine/models/et_model.pkl",
-        "ensemble":       "ml_engine/models/ensemble_model.pkl",
-        "label_encoder":  "ml_engine/models/label_encoder.pkl",
-        "scaler":         "ml_engine/models/scaler.pkl",
+        "ensemble":      "ml_engine/models/ensemble_model.pkl",
+        "random_forest": "ml_engine/models/rf_model.pkl",
+        "gradient_boost":"ml_engine/models/gb_model.pkl",
+        "extra_trees":   "ml_engine/models/et_model.pkl",
+        "label_encoder": "ml_engine/models/label_encoder.pkl",
+        "scaler":        "ml_engine/models/scaler.pkl",
     }
-
+    loaded = 0
     for name, path in model_files.items():
         if os.path.exists(path):
             try:
                 _models[name] = joblib.load(path)
-                print(f"[ML] Loaded: {name}")
+                loaded += 1
+                logger.info(f"[ML] Loaded: {name}")
             except Exception as e:
-                print(f"[ML] Could not load {name}: {e}")
+                logger.error(f"[ML] Failed to load {name}: {e}")
         else:
-            print(f"[ML] Not found: {path}")
+            logger.debug(f"[ML] Not found: {path}")
+    logger.info(f"[ML] {loaded}/{len(model_files)} models loaded")
 
 
-def _build_features(length: float, width: float, height: float, weight: float):
+def _validate_inputs(length: float, width: float, height: float, weight: float):
+    """Strict input validation before ML prediction."""
+    errors = []
+    if not (0.1 <= length <= 200):  errors.append(f"length {length} out of range [0.1, 200]")
+    if not (0.1 <= width  <= 200):  errors.append(f"width {width} out of range [0.1, 200]")
+    if not (0.1 <= height <= 200):  errors.append(f"height {height} out of range [0.1, 200]")
+    if not (0.01 <= weight <= 100): errors.append(f"weight {weight} out of range [0.01, 100]")
+    if errors:
+        raise ValueError(f"Invalid inputs: {'; '.join(errors)}")
+
+
+def _build_features(length: float, width: float, height: float, weight: float) -> np.ndarray:
     volume       = length * width * height
     dim_weight   = volume / 5000.0
     aspect_ratio = length / max(height, 0.001)
@@ -63,30 +74,23 @@ def _build_features(length: float, width: float, height: float, weight: float):
 
 
 def predict_packaging(
-    length: float,
-    width: float,
-    height: float,
-    weight: float,
+    length: float, width: float, height: float, weight: float
 ) -> Dict[str, Any]:
     """
-    Run ML prediction. Raises RuntimeError if models unavailable
-    so decision_service can catch it and use rule-based fallback.
+    ML prediction with strict validation and logging.
+    Raises RuntimeError if unavailable — caller uses rule-based fallback.
     """
     if not _sklearn_available:
         raise RuntimeError("scikit-learn not installed on this server")
-
     if not _models:
-        raise RuntimeError("No ML models loaded")
+        raise RuntimeError("No ML models loaded — using rule-based engine")
 
-    if any(v <= 0 for v in [length, width, height, weight]):
-        raise ValueError("All dimensions and weight must be positive")
+    _validate_inputs(length, width, height, weight)
 
     features = _build_features(length, width, height, weight)
-
     if "scaler" in _models:
         features = _models["scaler"].transform(features)
 
-    # Try best model first, fall through
     for model_name in ["ensemble", "random_forest", "gradient_boost", "extra_trees"]:
         if model_name in _models:
             model         = _models[model_name]
@@ -94,10 +98,13 @@ def predict_packaging(
             probabilities = model.predict_proba(features)[0]
             confidence    = float(np.max(probabilities))
 
-            if "label_encoder" in _models:
-                box_type = _models["label_encoder"].inverse_transform([prediction])[0]
-            else:
-                box_type = str(prediction)
+            box_type = (
+                _models["label_encoder"].inverse_transform([prediction])[0]
+                if "label_encoder" in _models
+                else str(prediction)
+            )
+
+            logger.info(f"[ML] Predicted {box_type} (conf={confidence:.2%}, model={model_name}, dims={length}x{width}x{height}cm, wt={weight}kg)")
 
             return {
                 "recommended_box":  box_type,
