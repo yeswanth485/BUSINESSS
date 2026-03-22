@@ -31,7 +31,20 @@ async def preflight(path: str):
 def root(): return {"status":"running","version":"1.0.0","frontend":"https://ai-packaging-automation-service.netlify.app"}
 
 @app.get("/health")
-def health(): return {"status":"ok","version":"1.0.0","db":"ready" if _db_ready else "starting"}
+def health():
+    ml_ok = False
+    try:
+        from app.services.ml_service import is_ml_available
+        ml_ok = is_ml_available()
+    except Exception:
+        pass
+    return {
+        "status":       "ok",
+        "version":      "1.0.0",
+        "db":           "ready" if _db_ready else "starting",
+        "ml_available": ml_ok,
+        "engine":       "ml_hybrid" if ml_ok else "rule_based",
+    }
 
 @app.get("/fix-db")
 def fix_db():
@@ -103,10 +116,38 @@ def _init_db():
             _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=eng)
             _db_ready = True
             print("[DB] Ready")
+            # Run column migrations for new cost tracking fields
+            _run_migrations(eng)
+            # Load ML models once at startup
+            try:
+                from app.services import ml_service as _ml
+                _ml.load_models()
+            except Exception as me:
+                print(f"[ML] Load skipped: {me}")
             return
         except Exception as e:
             print(f"[DB] Attempt {i+1}: {e}")
             time.sleep(4)
+
+def _run_migrations(eng):
+    """Safe ADD COLUMN migrations — never drops data."""
+    migrations = [
+        "ALTER TABLE packaging_plans ADD COLUMN IF NOT EXISTS baseline_cost FLOAT DEFAULT NULL",
+        "ALTER TABLE packaging_plans ADD COLUMN IF NOT EXISTS optimized_cost FLOAT DEFAULT NULL",
+        "ALTER TABLE packaging_plans ADD COLUMN IF NOT EXISTS savings FLOAT DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS sku VARCHAR(100) DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS channel VARCHAR(50) DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS pincode VARCHAR(10) DEFAULT NULL",
+        "ALTER TABLE orders ADD COLUMN IF NOT EXISTS destination_zone VARCHAR(50) DEFAULT 'zone_b'",
+    ]
+    with eng.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception:
+                pass
+    print("[DB] Migrations applied")
 
 threading.Thread(target=_init_db, daemon=True).start()
 
