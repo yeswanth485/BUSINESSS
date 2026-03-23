@@ -66,6 +66,19 @@ def create_order(
         db.add(OrderItem(order_id=order.id, product_id=item.product_id, quantity=item.quantity))
     db.commit()
     db.refresh(order)
+
+    # Auto-optimize immediately after creation
+    try:
+        from ..services.decision_service import optimize_packaging
+        optimize_packaging(
+            order_id         = order.id,
+            db               = db,
+            destination_zone = payload.destination_zone or "zone_b",
+        )
+        logger.info(f"[AutoOpt] Order {order.id} optimized automatically on creation")
+    except Exception as e:
+        logger.warning(f"[AutoOpt] Order {order.id} auto-optimization skipped: {e}")
+
     return order
 
 
@@ -312,15 +325,23 @@ def bulk_csv_upload(
     }
 
 
-# ── List and get orders ───────────────────────────────────────────────────────
-@router.get("", response_model=List[OrderOut])
+# ── List orders — enriched with packaging plan + product data ─────────────────
+@router.get("")
 def list_orders(
     skip: int = 0,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return (
+    """
+    Returns orders enriched with:
+    - Product name, SKU, dimensions, fragility from order_items
+    - Box type, costs, savings, efficiency from packaging_plans
+    Frontend can display all columns without any extra API calls.
+    """
+    from ..models.models import OrderItem, Product, PackagingPlan, PackagingPlanItem
+
+    orders = (
         db.query(Order)
         .filter(Order.user_id == current_user.id)
         .order_by(Order.created_at.desc())
@@ -328,17 +349,90 @@ def list_orders(
         .all()
     )
 
+    result = []
+    for order in orders:
+        # Get first order item + product
+        first_item = (
+            db.query(OrderItem)
+            .filter(OrderItem.order_id == order.id)
+            .first()
+        )
+        product = None
+        if first_item:
+            product = db.query(Product).filter(
+                Product.id == first_item.product_id
+            ).first()
 
-@router.get("/{order_id}", response_model=OrderOut)
+        # Get latest packaging plan
+        plan = (
+            db.query(PackagingPlan)
+            .filter(PackagingPlan.order_id == order.id)
+            .order_by(PackagingPlan.created_at.desc())
+            .first()
+        )
+
+        # Get plan item (box details)
+        plan_item = None
+        if plan:
+            plan_item = (
+                db.query(PackagingPlanItem)
+                .filter(PackagingPlanItem.packaging_plan_id == plan.id)
+                .first()
+            )
+
+        # Build enriched response
+        enriched = {
+            "id":               order.id,
+            "user_id":          order.user_id,
+            "destination_zone": order.destination_zone or "zone_b",
+            "status":           order.status,
+            "priority":         order.priority,
+            "created_at":       order.created_at.isoformat() if order.created_at else None,
+            # Product info
+            "product_name":     product.name if product else "—",
+            "sku":              product.sku  if product else "",
+            "quantity":         first_item.quantity if first_item else 1,
+            "fragility":        product.fragility_level if product else "standard",
+            "length":           product.length if product else 0,
+            "width":            product.width  if product else 0,
+            "height":           product.height if product else 0,
+            "weight":           product.weight if product else 0,
+            "channel":          product.channel if product else "—",
+            # Packaging plan — costs
+            "box":              plan_item.box_type      if plan_item else None,
+            "baseline_cost":    round(plan.baseline_cost,  2) if plan and plan.baseline_cost  else None,
+            "optimized_cost":   round(plan.optimized_cost, 2) if plan and plan.optimized_cost else None,
+            "total":            round(plan.total_cost,     2) if plan else None,
+            "saved":            round(plan.savings,        2) if plan and plan.savings else None,
+            "efficiency":       round(plan.efficiency_score * 100, 1) if plan else None,
+            "engine":           plan.decision_engine if plan else None,
+            "box_cost":         round(plan_item.box_cost,      2) if plan_item else None,
+            "shipping_cost":    round(plan_item.shipping_cost,  2) if plan_item else None,
+            "efficiency_score": round(plan_item.efficiency_score, 4) if plan_item else None,
+            "has_plan":         plan is not None,
+        }
+        result.append(enriched)
+
+    return result
+
+
+@router.get("/{order_id}")
 def get_order(
     order_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from ..models.models import OrderItem, Product, PackagingPlan, PackagingPlanItem
+
     order = db.query(Order).filter(
         Order.id == order_id,
         Order.user_id == current_user.id
     ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    return order
+    return {
+        "id":     order.id,
+        "status": order.status,
+        "destination_zone": order.destination_zone,
+        "created_at": order.created_at.isoformat() if order.created_at else None,
+    }
