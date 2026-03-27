@@ -205,24 +205,23 @@ def bulk_csv_upload(
             )
             savings_data  = calculate_cost_savings(cost_data["total_cost"], baseline_data["baseline_cost"])
 
-            # Save product
-            product = None
-            if row.sku:
-                product = db.query(Product).filter(
-                    Product.user_id==current_user.id, Product.sku==row.sku
-                ).first()
-            if not product:
-                product = Product(
-                    user_id=current_user.id, name=row.product_name, sku=row.sku,
-                    length=row.length, width=row.width, height=row.height,
-                    weight=row.weight, category=row.category,
-                    fragility_level=fragility, channel=row.channel, pincode=row.pincode
-                )
-                db.add(product)
-            else:
-                product.length=row.length; product.width=row.width
-                product.height=row.height; product.weight=row.weight
-                product.fragility_level=fragility
+            # Save product — always create fresh record for bulk uploads
+            # This ensures each CSV row uses its own unique dimensions exactly as uploaded
+            # Do NOT reuse by SKU — each upload is an independent optimization batch
+            product = Product(
+                user_id=current_user.id,
+                name=row.product_name,
+                sku=row.sku,
+                length=row.length,
+                width=row.width,
+                height=row.height,
+                weight=row.weight,
+                category=row.category,
+                fragility_level=fragility,
+                channel=row.channel,
+                pincode=row.pincode,
+            )
+            db.add(product)
             db.flush()
 
             # Save order
